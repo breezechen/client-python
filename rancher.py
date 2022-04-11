@@ -18,8 +18,8 @@ def _prefix(cmd):
 
 
 PREFIX = _prefix(__file__)
-CACHE_DIR = '~/.' + PREFIX.lower()
-TIME = not os.environ.get('TIME_API') is None
+CACHE_DIR = f'~/.{PREFIX.lower()}'
+TIME = os.environ.get('TIME_API') is not None
 DEFAULT_TIMEOUT = 45
 
 LIST = 'list-'
@@ -41,7 +41,7 @@ LIST_METHODS = {'__iter__': True, '__len__': True, '__getitem__': True}
 
 
 def convert_type_name(type):
-    if isinstance(type, str) is True:
+    if isinstance(type, str):
         return type.replace(".", "_").replace("-", "")
     return type
 
@@ -56,14 +56,13 @@ def echo(fn):
 
 def timed_url(fn):
     def wrapped(*args, **kw):
-        if TIME:
-            start = time.time()
-            ret = fn(*args, **kw)
-            delta = time.time() - start
-            print(delta, args[1], fn.__name__)
-            return ret
-        else:
+        if not TIME:
             return fn(*args, **kw)
+        start = time.time()
+        ret = fn(*args, **kw)
+        delta = time.time() - start
+        print(delta, args[1], fn.__name__)
+        return ret
     return wrapped
 
 
@@ -75,10 +74,7 @@ class RestObject(object):
         return self.__repr__()
 
     def __repr__(self):
-        data = {}
-        for k, v in self.__dict__.items():
-            if self._is_public(k, v):
-                data[k] = v
+        data = {k: v for k, v in self.__dict__.items() if self._is_public(k, v)}
         return repr(data)
 
     def __getattr__(self, k):
@@ -92,22 +88,14 @@ class RestObject(object):
     def __iter__(self):
         if self._is_list():
             return iter(self.data)
-        else:
-            data = {}
-            for k, v in self.__dict__.items():
-                if self._is_public(k, v):
-                    data[k] = v
-            return iter(data.keys())
+        data = {k: v for k, v in self.__dict__.items() if self._is_public(k, v)}
+        return iter(data.keys())
 
     def __len__(self):
         if self._is_list():
             return len(self.data)
-        else:
-            data = {}
-            for k, v in self.__dict__.items():
-                if self._is_public(k, v):
-                    data[k] = v
-            return len(data)
+        data = {k: v for k, v in self.__dict__.items() if self._is_public(k, v)}
+        return len(data)
 
     @staticmethod
     def _is_public(k, v):
@@ -117,11 +105,7 @@ class RestObject(object):
         return 'data' in self.__dict__ and isinstance(self.data, list)
 
     def data_dict(self):
-        data = {}
-        for k, v in self.__dict__.items():
-            if self._is_public(k, v):
-                data[k] = v
-        return data
+        return {k: v for k, v in self.__dict__.items() if self._is_public(k, v)}
 
 
 class Schema(object):
@@ -198,7 +182,7 @@ class Client(object):
                 self._headers[k] = v
         if token is not None:
             self.token = token
-            self._headers['Authorization'] = 'Bearer ' + token
+            self._headers['Authorization'] = f'Bearer {token}'
         self._access_key = access_key
         self._secret_key = secret_key
         if self._access_key is None:
@@ -319,9 +303,11 @@ class Client(object):
     def _unmarshall(self, text):
         if text is None or text == '':
             return text
-        obj = json.loads(text, object_hook=self.object_hook,
-                         object_pairs_hook=self.object_pairs_hook)
-        return obj
+        return json.loads(
+            text,
+            object_hook=self.object_hook,
+            object_pairs_hook=self.object_pairs_hook,
+        )
 
     def _marshall(self, obj, indent=None, sort_keys=False):
         if obj is None:
@@ -373,11 +359,7 @@ class Client(object):
     def update_by_id(self, type, id, *args, **kw):
         type_name = convert_type_name(type)
         url = self.schema.types[type_name].links.collection
-        if url.endswith('/'):
-            url = url + id
-        else:
-            url = '/'.join([url, id])
-
+        url = url + id if url.endswith('/') else '/'.join([url, id])
         return self._put_and_retry(url, *args, **kw)
 
     def update(self, obj, *args, **kw):
@@ -426,12 +408,12 @@ class Client(object):
                     if k == '_'.join([filter_name, m]):
                         return
 
-            raise ClientApiError(k + ' is not searchable field')
+            raise ClientApiError(f'{k} is not searchable field')
 
     def list(self, type, **kw):
         type_name = convert_type_name(type)
         if type_name not in self.schema.types:
-            raise ClientApiError(type_name + ' is not a valid type')
+            raise ClientApiError(f'{type_name} is not a valid type')
 
         self._validate_list(type_name, **kw)
         collection_url = self.schema.types[type_name].links.collection
@@ -466,34 +448,28 @@ class Client(object):
 
     def _to_value(self, value):
         if isinstance(value, dict):
-            ret = {}
-            for k, v in value.items():
-                ret[k] = self._to_value(v)
+            ret = {k: self._to_value(v) for k, v in value.items()}
             return ret
 
         if isinstance(value, list):
-            ret = []
-            for v in value:
-                ret.append(self._to_value(v))
+            ret = [self._to_value(v) for v in value]
             return ret
 
         if isinstance(value, RestObject):
             ret = {}
             for k, v in vars(value).items():
-                if not k.startswith('_') and \
-                        not isinstance(v, RestObject) and not callable(v):
-                    ret[k] = self._to_value(v)
-                elif not k.startswith('_') and isinstance(v, RestObject):
-                    ret[k] = self._to_dict(v)
+                if not k.startswith('_'):
+                    if not isinstance(v, RestObject) and not callable(v):
+                        ret[k] = self._to_value(v)
+                    elif isinstance(v, RestObject):
+                        ret[k] = self._to_dict(v)
             return ret
 
         return value
 
     def _to_dict(self, *args, **kw):
         if len(kw) == 0 and len(args) == 1 and self._is_list(args[0]):
-            ret = []
-            for i in args[0]:
-                ret.append(self._to_dict(i))
+            ret = [self._to_dict(i) for i in args[0]]
             return ret
 
         ret = {}
@@ -559,7 +535,7 @@ class Client(object):
         if not os.path.exists(cachedir):
             os.mkdir(cachedir)
 
-        return os.path.join(cachedir, 'schema-' + h + '.json')
+        return os.path.join(cachedir, f'schema-{h}.json')
 
     def _cache_schema(self, text):
         cached_schema = self._get_cached_schema_file_name()
@@ -601,8 +577,7 @@ class Client(object):
         while obj.transitioning == 'yes':
             time.sleep(sleep)
             sleep *= 2
-            if sleep > 2:
-                sleep = 2
+            sleep = min(sleep, 2)
             obj = self.reload(obj)
             delta = time.time() - start
             if delta > timeout:
@@ -614,9 +589,7 @@ class Client(object):
 
 
 def _get_timeout(timeout):
-    if timeout == -1:
-        return DEFAULT_TIMEOUT
-    return timeout
+    return DEFAULT_TIMEOUT if timeout == -1 else timeout
 
 
 if __name__ == '__main__':
